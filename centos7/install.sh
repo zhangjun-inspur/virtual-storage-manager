@@ -517,13 +517,15 @@ EOF
     fi
 }
 
-function _config_db_controler() {
+function _config_db_controller() {
     if [[ $DB_HOST ]] && [[ $DB_USER ]] && [[ $DB_PASSWORD ]]; then
         if [[ $IS_CONTROLLER -eq 0 ]]; then
             source /tmp/deployrc
         else
             source /etc/vsmdeploy/deployrc
         fi
+
+        # config for vsm.
         $SSH $USER@$DB_HOST "bash -x -s" <<EOF
 mysql -u$DB_USER -p$DB_PASSWORD -e "create user '$MYSQL_VSM_USER'@'%' identified by '$MYSQL_VSM_PASSWORD';"
 mysql -u$DB_USER -p$DB_PASSWORD -e "flush privileges;"
@@ -540,6 +542,32 @@ $SUDO service vsm-api restart
 $SUDO service vsm-conductor restart
 $SUDO service vsm-scheduler restart
 $SUDO service mariadb stop
+EOF
+
+        # config for vsm dashboard.
+        $SSH $USER@$DB_HOST "bash -x -s" <<EOF
+mysql -u$DB_USER -p$DB_PASSWORD -e "create user '$MYSQL_DASHBOARD_USER'@'%' identified by '$MYSQL_DASHBOARD_PASSWORD';"
+mysql -u$DB_USER -p$DB_PASSWORD -e "flush privileges;"
+mysql -u$DB_USER -p$DB_PASSWORD -e "create database dashboard CHARACTER SET utf8;"
+mysql -u$DB_USER -p$DB_PASSWORD -e "grant all privileges on dashboard.* to '$MYSQL_DASHBOARD_USER'@'%' identified by '$MYSQL_DASHBOARD_PASSWORD';flush privileges;"
+mysql -u$DB_USER -p$DB_PASSWORD -e "grant all privileges on dashboard.* to 'root'@'%' identified by '$DB_PASSWORD';flush privileges;"
+mysql -u$DB_USER -p$DB_PASSWORD -e "flush privileges;"
+EOF
+        file=/usr/share/vsm-dashboard/vsm_dashboard/local/local_settings.py
+        $SSH $USER@$CONTROLLER_ADDRESS "bash -x -s" <<EOF
+[[ -e $file ]] && $SUDO rm -rf $file
+$SUDO cp -rf /usr/local/bin/tools/etc/vsm-dashboard/local_settings.template $file
+$SUDO rm -rf /etc/vsm-dashboard/local_settings
+$SUDO ln -s $file /etc/vsm-dashboard/local_settings
+$SUDO sed -i "s,%MYSQL_VSM_DASHBOARD_DATABASE%,dashboard,g" $file
+$SUDO sed -i "s,%MYSQL_VSM_DASHBOARD_USER_NAME%,$MYSQL_DASHBOARD_USER,g" $file
+$SUDO sed -i "s,%MYSQL_VSM_DASHBOARD_PASSWORD%,$MYSQL_DASHBOARD_PASSWORD,g" $file
+$SUDO sed -i "s,%MYSQL_HOST%,$DB_HOST,g" $file
+$SUDO sed -i "s,OPENSTACK_HOST =.*,OPENSTACK_HOST = \"%KEYSTONE_HOST%\",g" $file
+$SUDO sed -i "s,%KEYSTONE_HOST%,$KEYSTONE_HOST,g" $file
+$SUDO sed -i "s,%KEYSTONE_VSM_SERVICE_PASSWORD%,$KEYSTONE_VSM_SERVICE_PASSWORD,g" $file
+$SUDO python /usr/share/vsm-dashboard/manage.py syncdb --noinput
+$SUDO service apache2 restart
 EOF
     fi
 }
@@ -561,7 +589,7 @@ if [[ $IS_PREPARE == False ]] && [[ $IS_CONTROLLER_INSTALL == False ]] \
     prepare
     install_controller
     _config_mq_controller
-    _config_db_controler
+    _config_db_controller
 #    generate_token
     for ip_or_hostname in $AGENT_ADDRESS_LIST; do
         install_agent $ip_or_hostname
@@ -574,7 +602,7 @@ else
     if [[ $IS_CONTROLLER_INSTALL == True ]]; then
         install_controller
         _config_mq_controller
-        _config_db_controler
+        _config_db_controller
     fi
     if [[ $IS_AGENT_INSTALL == True ]]; then
 #        generate_token
